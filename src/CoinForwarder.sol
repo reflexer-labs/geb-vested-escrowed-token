@@ -5,6 +5,7 @@ abstract contract SAFEEngineLike {
     function coinBalance(address) virtual public view returns (uint256);
 }
 abstract contract SystemCoinLike {
+    function approve(address,uint256) virtual public view returns (bool);
     function balanceOf(address) virtual public view returns (uint256);
     function transfer(address,uint256) virtual public returns (bool);
 }
@@ -12,28 +13,31 @@ abstract contract CoinJoinLike {
     function systemCoin() virtual public view returns (address);
     function exit(address, uint256) virtual external;
 }
+abstract contract veFeeDistributorLike {
+    function burn(address _coin) virtual external returns (bool);
+}
 
 contract CoinForwarder {
     // --- Variables ---
-    // Address that receives forwarded funds
-    address         public forwardedCoinReceiver;
+    // Address that receives and distributes fees
+    veFeeDistributorLike public feeDistributor;
 
-    SAFEEngineLike  public safeEngine;
-    SystemCoinLike  public systemCoin;
-    CoinJoinLike    public coinJoin;
+    SAFEEngineLike       public safeEngine;
+    SystemCoinLike       public systemCoin;
+    CoinJoinLike         public coinJoin;
 
     constructor(
-        address forwardedCoinReceiver_,
+        address feeDistributor_,
         address safeEngine_,
         address coinJoin_
     ) public {
         require(address(CoinJoinLike(coinJoin_).systemCoin()) != address(0), "CoinForwarder/null-system-coin");
-        require(forwardedCoinReceiver_ != address(0), "CoinForwarder/null-forward-receiver");
+        require(feeDistributor_ != address(0), "CoinForwarder/null-fee-distributor");
 
-        safeEngine            = SAFEEngineLike(safeEngine_);
-        coinJoin              = CoinJoinLike(coinJoin_);
-        systemCoin            = SystemCoinLike(coinJoin.systemCoin());
-        forwardedCoinReceiver = forwardedCoinReceiver_;
+        safeEngine     = SAFEEngineLike(safeEngine_);
+        coinJoin       = CoinJoinLike(coinJoin_);
+        systemCoin     = SystemCoinLike(coinJoin.systemCoin());
+        feeDistributor = veFeeDistributorLike(feeDistributor_);
 
         safeEngine.approveSAFEModification(coinJoin_);
     }
@@ -49,10 +53,12 @@ contract CoinForwarder {
 
     // --- Core Logic ---
     /**
-     * @notice Forward all funds this contract has to forwardedCoinReceiver
+     * @notice Forward all funds this contract has to feeDistributor
      */
     function forwardCoins() external {
         exitAllCoins();
-        systemCoin.transfer(forwardedCoinReceiver, systemCoin.balanceOf(address(this)));
+        if (systemCoin.balanceOf(address(this)) == 0) return;
+        systemCoin.approve(address(feeDistributor), systemCoin.balanceOf(address(this)));
+        feeDistributor.burn(address(systemCoin));
     }
 }

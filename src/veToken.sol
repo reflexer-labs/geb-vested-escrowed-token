@@ -623,7 +623,7 @@ contract veToken is ReentrancyGuard {
     /**
         * @notice Record global data to checkpoint
     */
-    function checkpoint(address _addr) external {
+    function checkpoint() external {
         _checkpoint(ZERO_ADDRESS, EMPTY_LOCKED_BALANCE_FACTORY(), EMPTY_LOCKED_BALANCE_FACTORY());
     }
 
