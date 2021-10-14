@@ -18,11 +18,33 @@ abstract contract VotingEscrow {
 }
 
 contract veFeeDistributor is ReentrancyGuard {
-    // --- Variables ---
-    uint256 public constant WEEK = 7 * 86400; // all future times are rounded by week
-    uint256 public constant TOKEN_CHECKPOINT_DEADLINE = 86400;
-    address public constant ZERO_ADDRESS = address(0);
+    // --- Auth ---
+    mapping (address => uint256) public authorizedAccounts;
+    /**
+     * @notice Add auth to an account
+     * @param account Account to add auth to
+     */
+    function addAuthorization(address account) external isAuthorized {
+        authorizedAccounts[account] = 1;
+        emit AddAuthorization(account);
+    }
+    /**
+     * @notice Remove auth from an account
+     * @param account Account to remove auth from
+     */
+    function removeAuthorization(address account) external isAuthorized {
+        authorizedAccounts[account] = 0;
+        emit RemoveAuthorization(account);
+    }
+    /**
+    * @notice Checks whether msg.sender can call an authed function
+    **/
+    modifier isAuthorized {
+        require(authorizedAccounts[msg.sender] == 1, "veFeeDistributor/account-not-authorized");
+        _;
+    }
 
+    // --- Variables ---
     uint256 public start_time;
     uint256 public time_cursor;
     uint256 public last_token_time;
@@ -36,14 +58,16 @@ contract veFeeDistributor is ReentrancyGuard {
     bool    public can_checkpoint_token;
     bool    public is_killed;
 
-    address public admin;
-    address public future_admin;
     address public emergency_return;
 
     mapping(address => uint256) public time_cursor_of;
     mapping(address => uint256) public user_epoch_of;
     mapping(uint256 => uint256) public tokens_per_week;
     mapping(uint256 => uint256) public ve_supply;
+
+    uint256 public constant WEEK = 7 * 86400; // all future times are rounded by week
+    uint256 public constant TOKEN_CHECKPOINT_DEADLINE = 86400;
+    address public constant ZERO_ADDRESS = address(0);
 
     // --- Structs ---
     // We cannot really do block numbers per se b/c slope is per time, not per block
@@ -57,8 +81,8 @@ contract veFeeDistributor is ReentrancyGuard {
     }
 
     // --- Events ---
-    event CommitAdmin(address admin);
-    event ApplyAdmin(address admin);
+    event AddAuthorization(address account);
+    event RemoveAuthorization(address account);
     event ToggleAllowCheckpointToken(bool toggle_flag);
     event CheckpointToken(uint256 time, uint256 tokens);
     event Claimed(address indexed recipient, uint256 amount, uint256 claim_epoch, uint256 max_epoch);
@@ -78,13 +102,14 @@ contract veFeeDistributor is ReentrancyGuard {
         address _admin,
         address _emergency_return
     ) public {
+        authorizedAccounts[_admin] = 1;
         uint256 t        = _start_time / WEEK * WEEK;
+
         start_time       = t;
         last_token_time  = t;
         time_cursor      = t;
         token            = _token;
         voting_escrow    = _voting_escrow;
-        admin            = _admin;
         emergency_return = _emergency_return;
     }
 
@@ -292,7 +317,7 @@ contract veFeeDistributor is ReentrancyGuard {
      *      to call.
     */
     function checkpoint_token() external {
-        require(msg.sender == admin || (can_checkpoint_token && (block.timestamp > last_token_time + TOKEN_CHECKPOINT_DEADLINE)));
+        require(authorizedAccounts[msg.sender] == 1 || (can_checkpoint_token && (block.timestamp > last_token_time + TOKEN_CHECKPOINT_DEADLINE)));
         _checkpoint_token();
     }
 
@@ -328,10 +353,9 @@ contract veFeeDistributor is ReentrancyGuard {
      *      may need to be called more than once to claim all available
      *      fees. In the `Claimed` event that fires, if `claim_epoch` is
      *      less than `max_epoch`, the account may claim again.
-     * @param _addr Address to claim fees for
      * @return uint256 Amount of fees claimed in the call
      */
-    function claim(address _addr) external nonReentrant returns (uint256) {
+    function claim() external nonReentrant returns (uint256) {
         require(!is_killed, "veFeeDistributor/contract-killed");
 
         address _addr = msg.sender;
@@ -340,7 +364,6 @@ contract veFeeDistributor is ReentrancyGuard {
             _checkpoint_total_supply();
         }
 
-        uint256 last_token_time = last_token_time;
         if (can_checkpoint_token && (block.timestamp > last_token_time + TOKEN_CHECKPOINT_DEADLINE)) {
             _checkpoint_token();
             last_token_time = block.timestamp;
@@ -372,8 +395,6 @@ contract veFeeDistributor is ReentrancyGuard {
         if (block.timestamp >= time_cursor) {
             _checkpoint_total_supply();
         }
-
-        uint256 last_token_time = last_token_time;
 
         if (can_checkpoint_token && (block.timestamp > last_token_time + TOKEN_CHECKPOINT_DEADLINE)) {
             _checkpoint_token();
@@ -422,41 +443,19 @@ contract veFeeDistributor is ReentrancyGuard {
     }
 
     /**
-     * @notice Commit transfer of ownership
-     * @param _addr New admin address
-     */
-    function commit_admin(address _addr) external {
-        require(msg.sender == admin, "veFeeDistributor/not-admin");
-        future_admin = _addr;
-        emit CommitAdmin(_addr);
-    }
-
-    /**
-     * @notice Apply transfer of ownership
-     */
-    function apply_admin() external {
-        require(msg.sender == admin, "veFeeDistributor/not-admin");
-        require(future_admin != ZERO_ADDRESS, "veFeeDistributor/null-future-admin");
-        admin = future_admin;
-        emit ApplyAdmin(future_admin);
-    }
-
-    /**
      * @notice Toggle permission for checkpointing by any account
      */
-    function toggle_allow_checkpoint_token() external {
-        require(msg.sender == admin, "veFeeDistributor/not-admin");
+    function toggle_allow_checkpoint_token() external isAuthorized {
         can_checkpoint_token = !can_checkpoint_token;
         emit ToggleAllowCheckpointToken(can_checkpoint_token);
     }
 
     /**
      * @notice Kill the contract
-     * @dev Killing transfers the entire 3CRV balance to the emergency return address
+     * @dev Killing transfers the entire fee balance to the emergency return address
      *      and blocks the ability to claim or burn. The contract cannot be unkilled.
      */
-    function kill_me() external {
-        require(msg.sender == admin, "veFeeDistributor/not-admin");
+    function kill_me() external isAuthorized {
         require(!is_killed, "veFeeDistributor/contract-killed");
 
         require(ERC20(token).transfer(emergency_return, ERC20(token).balanceOf(address(this))), "veFeeDistributor/cannot-transfer");
